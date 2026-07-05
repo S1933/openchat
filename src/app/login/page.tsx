@@ -4,10 +4,11 @@ import { signIn, auth } from "@/auth";
 export default async function LoginPage({
   searchParams
 }: {
-  searchParams: { error?: string; check?: string };
+  searchParams: Promise<{ error?: string; check?: string }>;
 }) {
   const session = await auth();
   if (session?.user) redirect("/");
+  const params = await searchParams;
 
   async function login(formData: FormData) {
     "use server";
@@ -37,8 +38,8 @@ export default async function LoginPage({
           className="mt-2 h-11 w-full rounded-md border border-border bg-white px-3 outline-none focus:ring-2 focus:ring-primary"
           placeholder="toi@example.com"
         />
-        {searchParams.error ? <p className="mt-3 text-sm text-red-600">Connexion impossible.</p> : null}
-        {searchParams.check ? <p className="mt-3 text-sm text-primary">Verifie ta boite email.</p> : null}
+        {params.error ? <p className="mt-3 text-sm text-red-600">Connexion impossible.</p> : null}
+        {params.check ? <p className="mt-3 text-sm text-primary">Verifie ta boite email.</p> : null}
         <button className="mt-5 h-11 w-full rounded-md bg-primary px-4 font-medium text-primary-foreground">
           Envoyer le lien
         </button>
