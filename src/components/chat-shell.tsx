@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, Menu, Pin, PinOff, Plus, RefreshCw, Search, Send, Settings, Sparkles, Square, Trash2, X } from "lucide-react";
+import { Check, Copy, Globe, Menu, Pin, PinOff, Plus, RefreshCw, Search, Send, Settings, Sparkles, Square, Star, Trash2, X } from "lucide-react";
 import { MarkdownMessage } from "@/components/markdown-message";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +19,7 @@ type Message = {
   content: string;
   thinking?: string;
   model?: string | null;
+  webSearch?: boolean;
 };
 
 type Model = {
@@ -27,6 +28,7 @@ type Model = {
   modelId: string;
   displayName: string;
   free: boolean;
+  favorite: boolean;
 };
 
 export function ChatShell({ email }: { email: string }) {
@@ -36,6 +38,10 @@ export function ChatShell({ email }: { email: string }) {
   const [hasApiKey, setHasApiKey] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [models, setModels] = useState<Model[]>([]);
+  const sortedModels = useMemo(
+    () => [...models].sort((a, b) => Number(b.favorite) - Number(a.favorite)),
+    [models]
+  );
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -47,7 +53,9 @@ export function ChatShell({ email }: { email: string }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [modelHighlight, setModelHighlight] = useState(0);
-  const modelSheetRef = useRef<HTMLButtonElement | null>(null);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const modelSheetRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
@@ -95,8 +103,28 @@ export function ChatShell({ email }: { email: string }) {
     void bootstrap();
   }, [bootstrap]);
 
+  // Track viewport size: mobile (<768px) gets Enter-as-newline, desktop
+  // keeps Enter-to-submit. Mobile keyboards + autocorrect make accidental
+  // Enter submits too common; on mobile the user has the Send button.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mql = window.matchMedia("(max-width: 767px)");
+    const update = () => setIsMobile(mql.matches);
+    update();
+    mql.addEventListener("change", update);
+    return () => mql.removeEventListener("change", update);
+  }, []);
+
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
+
+  // Auto-grow the textarea to fit its content (typed or dictated), capped at max-h-36
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
+  }, [input]);
 
   function handleMessagesScroll() {
     const el = messagesScrollRef.current;
@@ -110,6 +138,17 @@ export function ChatShell({ email }: { email: string }) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
     }
   }, [messages, streaming]);
+
+  // Focus the textarea on app load (whenever the chat UI is mounted, not onboarding).
+  // Belt-and-suspenders with `autoFocus` on the textarea itself: autoFocus fires
+  // when React first mounts the element, this re-asserts focus on the next
+  // animation frame in case a browser blocked the initial programmatic call
+  // (common after a NextAuth redirect).
+  useEffect(() => {
+    if (needsOnboarding) return;
+    const id = requestAnimationFrame(() => textareaRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [needsOnboarding]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -130,20 +169,47 @@ export function ChatShell({ email }: { email: string }) {
     modelHighlightRef.current = modelHighlight;
   }, [modelHighlight]);
 
+  // Edge-swipe gesture: from the left edge of the screen, swipe right to open the sidebar.
+  // Mirrors the iOS native "back swipe" affordance on mobile.
+  const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
+  function handleTouchStart(event: React.TouchEvent) {
+    if (drawerOpen) return;
+    const touch = event.touches[0];
+    if (!touch || touch.clientX > 30) return;
+    swipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+  }
+  function handleTouchMove(event: React.TouchEvent) {
+    if (drawerOpen) return;
+    const start = swipeStartRef.current;
+    if (!start) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    // Trigger only on a predominantly horizontal, right-ward swipe past threshold
+    if (dx > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      swipeStartRef.current = null;
+      setDrawerOpen(true);
+    }
+  }
+  function handleTouchEnd() {
+    swipeStartRef.current = null;
+  }
+
   useEffect(() => {
     if (!modelSheetOpen) return;
     setModelHighlight(0);
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "ArrowDown") {
         event.preventDefault();
-        setModelHighlight((index) => Math.min(index + 1, models.length));
+        setModelHighlight((index) => Math.min(index + 1, sortedModels.length - 1));
       } else if (event.key === "ArrowUp") {
         event.preventDefault();
         setModelHighlight((index) => Math.max(index - 1, 0));
       } else if (event.key === "Enter") {
         event.preventDefault();
         const current = modelHighlightRef.current;
-        const id = current === 0 ? (models[0]?.id ?? "") : models[current - 1]?.id;
+        const id = sortedModels[current]?.id;
         if (id !== undefined) selectModel(id);
       } else if (event.key === "Escape") {
         event.preventDefault();
@@ -152,7 +218,7 @@ export function ChatShell({ email }: { email: string }) {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [modelSheetOpen, models]);
+  }, [modelSheetOpen, sortedModels]);
 
   useEffect(() => {
     modelSheetRef.current?.scrollIntoView({ block: "nearest" });
@@ -246,6 +312,27 @@ export function ChatShell({ email }: { email: string }) {
     setTimeout(() => textareaRef.current?.focus(), 0);
   }
 
+  async function toggleFavorite(modelId: string) {
+    // Optimistic update: flip locally first, then sync to server
+    let nextValue = false;
+    setModels((prev) =>
+      prev.map((model) => {
+        if (model.id !== modelId) return model;
+        nextValue = !model.favorite;
+        return { ...model, favorite: nextValue };
+      })
+    );
+    try {
+      await fetch("/api/models/favorite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modelId })
+      });
+    } catch (err) {
+      console.error("toggleFavorite failed", err);
+    }
+  }
+
   async function commitRename(id: string) {
     const title = editTitle.trim();
     setEditingId(null);
@@ -271,9 +358,11 @@ export function ChatShell({ email }: { email: string }) {
     });
   }
 
-  async function sendMessage(event: FormEvent) {
-    event.preventDefault();
+  async function sendMessage(event?: FormEvent) {
+    event?.preventDefault();
     if (!input.trim() || streaming) return;
+    const useWebSearch = webSearchEnabled;
+    setWebSearchEnabled(false);
     let id = conversationId;
     if (!id) {
       const res = await fetch("/api/conversations", {
@@ -291,17 +380,25 @@ export function ChatShell({ email }: { email: string }) {
     setInput("");
     setMessages((prev) => [
       ...prev,
-      { id: crypto.randomUUID(), role: "user", content: text, model: selectedModel },
+      { id: crypto.randomUUID(), role: "user", content: text, model: selectedModel, webSearch: useWebSearch },
       { id: "streaming", role: "assistant", content: "", model: selectedModel }
     ]);
     setStreaming(true);
     setError("");
+    // User just submitted: they want to see the response, override the
+    // "respect prior scroll position" behavior. Reset stick-to-bottom so
+    // the existing useEffect scrolls, and force one more scroll on the
+    // next frame to win against the keyboard pop on mobile.
+    stickToBottomRef.current = true;
+    requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    });
     abortRef.current = new AbortController();
 
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversationId: id, model: selectedModel, message: text }),
+      body: JSON.stringify({ conversationId: id, model: selectedModel, message: text, webSearch: useWebSearch }),
       signal: abortRef.current.signal
     });
 
@@ -430,7 +527,7 @@ export function ChatShell({ email }: { email: string }) {
     <main className="flex h-dvh overflow-hidden bg-background">
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-30 w-[min(84vw,320px)] border-r border-border bg-white transition-transform lg:static lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-30 w-[80%] border-r border-border bg-white shadow-xl transition-transform lg:static lg:w-80 lg:translate-x-0 lg:shadow-none",
           drawerOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
@@ -489,13 +586,38 @@ export function ChatShell({ email }: { email: string }) {
         </div>
       </aside>
 
-      {drawerOpen ? <div className="fixed inset-0 z-20 bg-black/25 lg:hidden" onClick={() => setDrawerOpen(false)} /> : null}
+      {drawerOpen ? <div className="fixed inset-0 z-20 lg:hidden" onClick={() => setDrawerOpen(false)} /> : null}
 
-      <section className="flex min-w-0 flex-1 flex-col">
+      <section
+        className="flex min-w-0 flex-1 flex-col"
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchEnd}
+      >
         {needsOnboarding ? (
           <Onboarding apiKey={apiKey} setApiKey={setApiKey} saveApiKey={saveApiKey} error={error} />
         ) : (
           <>
+            <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border bg-white px-2 lg:hidden">
+              <button
+                className="h-10 w-10 shrink-0 rounded-md hover:bg-muted"
+                onClick={() => setDrawerOpen(true)}
+                title="Ouvrir le menu"
+                aria-label="Ouvrir le menu"
+              >
+                <Menu className="mx-auto" size={20} />
+              </button>
+              <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted-foreground">{mainTitle}</span>
+              <button
+                className="h-10 w-10 shrink-0 rounded-md hover:bg-muted"
+                onClick={createConversation}
+                title="Nouveau chat"
+                aria-label="Nouveau chat"
+              >
+                <Plus className="mx-auto" size={20} />
+              </button>
+            </div>
             <div ref={messagesScrollRef} onScroll={handleMessagesScroll} className="flex-1 overflow-y-auto px-3 py-4">
               {messages.length === 0 ? (
                 <div className="mx-auto flex h-full max-w-md flex-col justify-center text-center">
@@ -514,6 +636,12 @@ export function ChatShell({ email }: { email: string }) {
                     >
                       <div className="flex items-start gap-2">
                         <div className="min-w-0 flex-1">
+                          {message.webSearch ? (
+                            <div className="mb-1.5 inline-flex items-center gap-1 rounded-full bg-primary-foreground/20 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide">
+                              <Globe size={11} />
+                              Web search
+                            </div>
+                          ) : null}
                           <MarkdownMessage content={message.content || (message.id === "streaming" ? "..." : "")} />
                         </div>
                         {message.content ? (
@@ -534,7 +662,7 @@ export function ChatShell({ email }: { email: string }) {
             </div>
             <form ref={formRef} className="border-t border-border bg-white p-2" onSubmit={sendMessage}>
               {error ? <p className="mb-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
-              <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-lg border border-border bg-white p-2">
+              <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-lg border-0 bg-white p-2 lg:border lg:border-border">
                 <button
                   type="button"
                   onClick={() => setModelSheetOpen(true)}
@@ -543,26 +671,50 @@ export function ChatShell({ email }: { email: string }) {
                 >
                   <Sparkles size={14} className="shrink-0" />
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setWebSearchEnabled((value) => !value)}
+                  className={cn(
+                    "flex h-10 w-10 shrink-0 items-center justify-center rounded-md",
+                    webSearchEnabled ? "bg-primary text-primary-foreground" : "bg-muted"
+                  )}
+                  title={webSearchEnabled ? "Desactiver la recherche web" : "Activer la recherche web"}
+                  aria-label="Recherche web"
+                  aria-pressed={webSearchEnabled}
+                >
+                  <Globe size={16} className="shrink-0" />
+                </button>
                 <textarea
                   ref={textareaRef}
                   value={input}
                   onChange={(event) => setInput(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
+                    // On mobile, Enter inserts a newline (default behavior).
+                    // On desktop, Enter submits; Shift+Enter still inserts a newline.
+                    if (isMobile) return;
+                    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                       event.preventDefault();
-                      formRef.current?.requestSubmit();
+                      void sendMessage();
                     }
                   }}
                   rows={1}
-                  className="max-h-36 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 outline-none"
-                  placeholder="Message OpenChat (⏎ pour envoyer, ⇧⏎ saut de ligne)"
+                  autoFocus
+                  className="max-h-36 min-h-10 flex-1 resize-none overflow-y-auto bg-transparent px-2 py-2 outline-none"
+                  placeholder="Message OpenChat…"
+                  title="⏎ pour envoyer · ⇧⏎ saut de ligne"
                 />
                 {streaming ? (
                   <button type="button" className="h-10 w-10 rounded-md bg-muted" onClick={stopStreaming} title="Stop">
                     <Square className="mx-auto" size={17} />
                   </button>
                 ) : (
-                  <button disabled={!input.trim() || !selectedModel} className="h-10 w-10 rounded-md bg-primary text-primary-foreground disabled:opacity-40" title="Envoyer">
+                  <button
+                    type="submit"
+                    disabled={!input.trim() || !selectedModel}
+                    className="h-10 w-10 rounded-md bg-primary text-primary-foreground disabled:opacity-40"
+                    title="Envoyer"
+                    aria-label="Envoyer"
+                  >
                     <Send className="mx-auto" size={17} />
                   </button>
                 )}
@@ -574,39 +726,42 @@ export function ChatShell({ email }: { email: string }) {
 
       {modelSheetOpen ? (
         <Sheet title="Modeles" onClose={() => setModelSheetOpen(false)}>
-          <button
-            ref={modelHighlight === 0 ? modelSheetRef : null}
-            className={cn(
-              "mb-2 flex h-12 w-full items-center justify-between rounded-md border border-border px-3",
-              modelHighlight === 0 && "ring-2 ring-primary"
-            )}
-            onClick={() => {
-              const first = models[0]?.id ?? "";
-              if (first) selectModel(first);
-              else setModelSheetOpen(false);
-            }}
-            onMouseEnter={() => setModelHighlight(0)}
-          >
-            Auto <Check size={17} className={selectedModel === models[0]?.id ? "opacity-100" : "opacity-0"} />
-          </button>
-          {models.map((model, index) => {
-            const highlight = modelHighlight === index + 1;
+          {sortedModels.map((model, index) => {
+            const highlight = modelHighlight === index;
             return (
-              <button
+              <div
                 key={model.id}
                 ref={highlight ? modelSheetRef : null}
                 className={cn(
                   "mb-2 flex min-h-12 w-full items-center justify-between rounded-md border border-border px-3 text-left",
                   highlight && "ring-2 ring-primary"
                 )}
-                onClick={() => selectModel(model.id)}
-                onMouseEnter={() => setModelHighlight(index + 1)}
+                onMouseEnter={() => setModelHighlight(index)}
               >
-                <span>
+                <button
+                  className="min-w-0 flex-1 py-3 text-left"
+                  onClick={() => selectModel(model.id)}
+                >
                   <span className="block font-medium">{model.displayName}</span>
-                </span>
-                <Check size={17} className={selectedModel === model.id ? "opacity-100" : "opacity-0"} />
-              </button>
+                </button>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void toggleFavorite(model.id);
+                  }}
+                  className="ml-2 h-9 w-9 shrink-0 rounded-md hover:bg-muted"
+                  title={model.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}
+                  aria-label={model.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}
+                  aria-pressed={model.favorite}
+                >
+                  <Star
+                    size={17}
+                    className={cn("mx-auto", model.favorite ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground")}
+                  />
+                </button>
+                <Check size={17} className={cn("ml-1 shrink-0", selectedModel === model.id ? "opacity-100" : "opacity-0")} />
+              </div>
             );
           })}
         </Sheet>

@@ -17,6 +17,7 @@ export async function GET() {
         displayName: model.displayName,
         free: model.free,
         available: model.available,
+        favorite: model.favorite,
         lastSync: model.lastSync
       }))
     });

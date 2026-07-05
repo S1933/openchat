@@ -20,5 +20,6 @@ export const conversationUpdateSchema = z.object({
 export const chatSchema = z.object({
   conversationId: z.string().min(1),
   model: z.string().min(1),
-  message: z.string().min(1).max(20000)
+  message: z.string().min(1).max(20000),
+  webSearch: z.boolean().optional()
 });

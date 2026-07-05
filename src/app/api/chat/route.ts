@@ -3,15 +3,14 @@ import { prisma } from "@/lib/prisma";
 import { decryptSecret } from "@/lib/crypto";
 import { json, errorResponse } from "@/lib/http";
 import { buildConversationContext, compactSummary, shouldRefreshSummary } from "@/lib/memory";
-import { rateLimit } from "@/lib/rate-limit";
 import { streamChat } from "@/lib/providers";
 import { requireUserId } from "@/lib/session";
 import { chatSchema } from "@/lib/validation";
+import { formatSearchContext, searchWeb } from "@/lib/search";
 
 export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
-    await rateLimit("chat", userId);
     const body = chatSchema.parse(await request.json());
     const [settings, conversation] = await Promise.all([
       prisma.userSettings.findUnique({ where: { userId } }),
@@ -28,11 +27,28 @@ export async function POST(request: Request) {
         conversationId: conversation.id,
         role: MessageRole.user,
         content: body.message,
-        model: body.model
+        model: body.model,
+        webSearch: body.webSearch ?? false
       }
     });
 
-    const context = buildConversationContext(conversation.summary, [...conversation.messages, userMessage]);
+    const [provider, ...rest] = body.model.split(":");
+    const modelId = rest.join(":");
+    const cached = await prisma.modelCache.findUnique({
+      where: { userId_provider_modelId: { userId, provider, modelId } },
+      select: { displayName: true }
+    });
+    const modelLabel = cached?.displayName ?? body.model;
+    let extraContext: string | undefined;
+    if (body.webSearch) {
+      try {
+        const result = await searchWeb(body.message, request.signal);
+        extraContext = formatSearchContext(result);
+      } catch (err) {
+        console.error("[chat] web search failed", err);
+      }
+    }
+    const context = buildConversationContext(conversation.summary, [...conversation.messages, userMessage], modelLabel, extraContext);
     const apiKey = decryptSecret(settings.apiKeyEncrypted);
     const encoder = new TextEncoder();
     let assistantText = "";
@@ -50,33 +66,44 @@ export async function POST(request: Request) {
               controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: chunk.token })}\n\n`));
             }
           }
-          const assistant = await prisma.message.create({
-            data: {
-              conversationId: conversation.id,
-              role: MessageRole.assistant,
-              content: assistantText,
-              model: body.model,
-              status: "complete"
-            }
-          });
-          const assistantCount = await prisma.message.count({
-            where: { conversationId: conversation.id, role: MessageRole.assistant }
-          });
-          await prisma.conversation.update({
-            where: { id: conversation.id },
-            data: {
-              selectedModel: body.model,
-              title: conversation.title === "New chat" ? body.message.slice(0, 60) : conversation.title,
-              summary: shouldRefreshSummary(assistantCount)
-                ? compactSummary(conversation.summary, body.message, assistant.content)
-                : conversation.summary
-            }
-          });
+          // (D) Send `done` to the client immediately, then persist the assistant
+          // message + conversation metadata in the background. This frees the
+          // client from waiting on Prisma before the stream "completes".
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true })}\n\n`));
           controller.close();
+
+          void (async () => {
+            try {
+              const assistant = await prisma.message.create({
+                data: {
+                  conversationId: conversation.id,
+                  role: MessageRole.assistant,
+                  content: assistantText,
+                  model: body.model,
+                  status: "complete"
+                }
+              });
+              const assistantCount = await prisma.message.count({
+                where: { conversationId: conversation.id, role: MessageRole.assistant }
+              });
+              await prisma.conversation.update({
+                where: { id: conversation.id },
+                data: {
+                  selectedModel: body.model,
+                  title: conversation.title === "New chat" ? body.message.slice(0, 60) : conversation.title,
+                  summary: shouldRefreshSummary(assistantCount)
+                    ? compactSummary(conversation.summary, body.message, assistant.content)
+                    : conversation.summary
+                }
+              });
+            } catch (err) {
+              console.error("[chat] post-stream persist failed", err);
+            }
+          })();
         } catch (error) {
           if (assistantText) {
-            await prisma.message.create({
+            // Fire-and-forget so the error event isn't blocked by a DB write
+            void prisma.message.create({
               data: {
                 conversationId: conversation.id,
                 role: MessageRole.assistant,
@@ -84,7 +111,7 @@ export async function POST(request: Request) {
                 model: body.model,
                 status: request.signal.aborted ? "cancelled" : "error"
               }
-            });
+            }).catch((err) => console.error("[chat] persist-on-error failed", err));
           }
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: error instanceof Error ? error.message : "server_error" })}\n\n`));
           controller.close();

@@ -1,14 +1,12 @@
 import { prisma } from "@/lib/prisma";
 import { decryptSecret } from "@/lib/crypto";
 import { json, errorResponse } from "@/lib/http";
-import { rateLimit } from "@/lib/rate-limit";
 import { requireUserId } from "@/lib/session";
 import { listProviderModels } from "@/lib/providers";
 
 export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
-    await rateLimit("settings", userId);
     const settings = await prisma.userSettings.findUnique({ where: { userId } });
     if (!settings?.apiKeyEncrypted) throw new Error("missing_api_key");
     const { provider } = (await request.json()) as { provider: string };

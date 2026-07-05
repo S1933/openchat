@@ -90,6 +90,7 @@ model Message {
   promptTokens     Int?
   completionTokens Int?
   status           MessageStatus @default(complete)
+  webSearch        Boolean      @default(false)
   conversation     Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   createdAt        DateTime      @default(now())
 
@@ -104,6 +105,7 @@ model ModelCache {
   displayName String
   free        Boolean  @default(false)
   available   Boolean  @default(true)
+  favorite    Boolean  @default(false)
   lastSync    DateTime @default(now())
 
   @@unique([userId, provider, modelId])

@@ -12,16 +12,16 @@ OpenChat is a thin Next.js server that brokers chat requests between a logged-in
 └────────────────┘           │  Route Handlers  │
                              │                  │
                              │  Middleware:     │
-                             │   auth + rate    │
+                             │   auth           │
                              └────────┬─────────┘
                                       │
                 ┌─────────────────────┼─────────────────────┐
                 ▼                     ▼                     ▼
-        ┌──────────────┐      ┌──────────────┐      ┌──────────────────┐
-        │  PostgreSQL  │      │ Upstash Redis│      │  Provider (Go)   │
-        │  Prisma 6    │      │  (optional)  │      │  /v1/models      │
-        │  + NextAuth  │      │  rate-limit  │      │  /v1/chat/...    │
-        └──────────────┘      └──────────────┘      └──────────────────┘
+        ┌──────────────┐                   ┌──────────────────┐
+        │  PostgreSQL  │                   │  Provider (Go)   │
+        │  Prisma 6    │                   │  /v1/models      │
+        │  + NextAuth  │                   │  /v1/chat/...    │
+        └──────────────┘                   └──────────────────┘
 ```
 
 ## Layered design
@@ -35,8 +35,7 @@ src/
   lib/                Pure TS, no React
     prisma.ts         Singleton client
     session.ts        requireUserId() → throws 401 if unauthenticated
-    http.ts           json() + errorResponse() (ZodError → 400, mapped Errors → 401/429/404)
-    rate-limit.ts     Upstash sliding-window per user; no-op if env missing
+    http.ts           json() + errorResponse() (ZodError → 400, mapped Errors → 401/404)
     crypto.ts         AES-256-GCM encrypt/decrypt for the user API key
     validation.ts     Zod schemas for every API input
     providers.ts      Provider-agnostic streaming + model listing
@@ -70,7 +69,6 @@ User ──┬─ Account (NextAuth)
    - Optimistic add: empty user message + `streaming` placeholder assistant
 2. **Server** (`api/chat/route.ts POST`):
    - `requireUserId()` → 401 if not authed
-   - `rateLimit("chat", userId)` → 429 if exceeded
    - `zod.parse(chatSchema)` → 400 on shape error
    - Load `Conversation` + last 40 `Message`s
    - Persist the user `Message` immediately
@@ -101,7 +99,6 @@ data: {"error":"invalid_key"}\n\n
 
 - API key encrypted at rest (`aes-256-gcm`), never returned to the client
 - All `/api/*` routes go through `requireUserId()` (DB session, not JWT)
-- Per-user rate limit on `chat` (30/min) and `settings` (10/min); degrades open if Upstash env is missing
 - `assertOwner()` on every `Conversation` mutation
 - `chatSchema.message` capped at 20k chars
 - NextAuth `signIn` redirects unauthed users to `/login` via `pages.signIn`

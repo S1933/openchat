@@ -1,7 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { json, errorResponse } from "@/lib/http";
-import { rateLimit } from "@/lib/rate-limit";
 import { requireUserId } from "@/lib/session";
 import { apiKeySchema } from "@/lib/validation";
 
@@ -22,7 +21,6 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
-    await rateLimit("settings", userId);
     const body = apiKeySchema.parse(await request.json());
     const settings = await prisma.userSettings.upsert({
       where: { userId },

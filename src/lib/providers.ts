@@ -70,11 +70,22 @@ export async function* streamChat({
 
   if (res.status === 401 || res.status === 403) throw new Error("invalid_key");
   if (res.status === 429) throw new Error("rate_limit");
-  if (!res.ok || !res.body) throw new Error("provider_unavailable");
+  if (!res.ok || !res.body) {
+    // Log the upstream's response body so 5xx errors are diagnosable
+    let body = "";
+    try {
+      body = await res.text();
+    } catch {
+      // ignore
+    }
+    console.error("[streamChat] upstream error body", body.slice(0, 500));
+    throw new Error("provider_unavailable");
+  }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let firstModel = true;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -88,8 +99,13 @@ export async function* streamChat({
       const payload = trimmed.slice(5).trim();
       if (payload === "[DONE]") return;
       const json = JSON.parse(payload) as {
+        model?: string;
         choices?: Array<{ delta?: { content?: string; reasoning_content?: string } }>;
       };
+      if (firstModel && json.model) {
+        console.error("[streamChat] response model", { requested: modelId, served: json.model });
+        firstModel = false;
+      }
       const delta = json.choices?.[0]?.delta;
       const thinking = delta?.reasoning_content;
       const token = delta?.content;

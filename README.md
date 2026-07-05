@@ -8,7 +8,6 @@ Mobile-first chat client. Authenticated users paste a provider API key, pick a m
 - **TypeScript**, **Tailwind CSS**
 - **PostgreSQL** + **Prisma 6**
 - **NextAuth 5** (database sessions, Resend magic-link)
-- **Upstash Redis** for rate limiting (optional, degrades to no-limit)
 - **Vitest** for unit tests
 
 ## Quickstart
@@ -43,8 +42,6 @@ npm run dev
 | `AUTH_EMAIL_FROM` | yes | Sender address (`"App <addr@resend.dev>"`) |
 | `APP_ENCRYPTION_KEY` | yes | 32-byte hex used to encrypt user API keys at rest |
 | `PROVIDER_<NAME>_BASE_URL` | yes per provider | e.g. `PROVIDER_GO_BASE_URL="https://opencode.ai/zen/go"` |
-| `UPSTASH_REDIS_REST_URL` | optional | Enables rate limiting if set |
-| `UPSTASH_REDIS_REST_TOKEN` | optional | Same |
 
 Provider base URLs are read by `src/lib/providers.ts` at runtime: `PROVIDER_<UPPERCASE_NAME>_BASE_URL`. The user enters a model id as `<provider>:<modelId>` (e.g. `go:minimax-m3`).
 
