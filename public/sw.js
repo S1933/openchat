@@ -1,4 +1,4 @@
-const CACHE = "openchat-zen-v1";
+const CACHE = "openchat-v1";
 const ASSETS = ["/", "/manifest.json", "/icon.svg"];
 
 self.addEventListener("install", (event) => {

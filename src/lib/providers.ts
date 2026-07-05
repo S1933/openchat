@@ -6,35 +6,28 @@ export type ChatMessage = {
 };
 
 export type ProviderModel = {
-  provider: "zen" | "go";
+  provider: string;
   modelId: string;
   displayName: string;
   free: boolean;
   available: boolean;
 };
 
-type ProviderName = ProviderModel["provider"];
-
-const providers: Record<ProviderName, { label: string; baseUrl?: string }> = {
-  zen: { label: "OpenCode Zen", baseUrl: process.env.OPENCODE_ZEN_BASE_URL },
-  go: { label: "OpenCode Go", baseUrl: process.env.OPENCODE_GO_BASE_URL }
-};
-
-function providerFromModel(model: string): { provider: ProviderName; modelId: string } {
-  const [provider, ...rest] = model.split(":");
-  if ((provider !== "zen" && provider !== "go") || rest.length === 0) {
-    throw new Error("Invalid model id");
-  }
-  return { provider, modelId: rest.join(":") };
+function providerFromModel(model: string): { provider: string; modelId: string } {
+  const parts = model.split(":");
+  const invalid = parts.length < 2 || !parts[0] || !parts[1];
+  if (invalid) throw new Error("Invalid model id");
+  return { provider: parts[0], modelId: parts.slice(1).join(":") };
 }
 
-function baseUrl(provider: ProviderName) {
-  const url = providers[provider].baseUrl;
+function baseUrl(provider: string) {
+  const key = `PROVIDER_${provider.toUpperCase()}_BASE_URL`;
+  const url = process.env[key];
   if (!url) throw new Error(`${provider} base URL is not configured`);
   return url.replace(/\/$/, "");
 }
 
-export async function listProviderModels(provider: ProviderName, apiKey: string) {
+export async function listProviderModels(provider: string, apiKey: string) {
   const res = await fetch(`${baseUrl(provider)}/v1/models`, {
     headers: { Authorization: `Bearer ${apiKey}` },
     cache: "no-store"
@@ -51,18 +44,6 @@ export async function listProviderModels(provider: ProviderName, apiKey: string)
   }));
 }
 
-export async function listAllModels(apiKey: string) {
-  const results = await Promise.allSettled(
-    (Object.keys(providers) as ProviderName[]).map((provider) => listProviderModels(provider, apiKey))
-  );
-  const models = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
-  if (models.length === 0) {
-    const invalid = results.some((result) => result.status === "rejected" && result.reason?.message === "invalid_key");
-    throw new Error(invalid ? "invalid_key" : "provider_unavailable");
-  }
-  return models;
-}
-
 export async function* streamChat({
   apiKey,
   model,
@@ -75,7 +56,8 @@ export async function* streamChat({
   signal?: AbortSignal;
 }) {
   const { provider, modelId } = providerFromModel(model);
-  const res = await fetch(`${baseUrl(provider)}/v1/chat/completions`, {
+  const url = `${baseUrl(provider)}/v1/chat/completions`;
+  const res = await fetch(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -84,6 +66,7 @@ export async function* streamChat({
     body: JSON.stringify({ model: modelId, messages, stream: true }),
     signal
   });
+  console.error("[streamChat]", { url, model: modelId, keyPrefix: apiKey.slice(0, 10), status: res.status });
 
   if (res.status === 401 || res.status === 403) throw new Error("invalid_key");
   if (res.status === 429) throw new Error("rate_limit");
@@ -104,9 +87,14 @@ export async function* streamChat({
       if (!trimmed.startsWith("data:")) continue;
       const payload = trimmed.slice(5).trim();
       if (payload === "[DONE]") return;
-      const json = JSON.parse(payload) as { choices?: Array<{ delta?: { content?: string } }> };
-      const token = json.choices?.[0]?.delta?.content;
-      if (token) yield token;
+      const json = JSON.parse(payload) as {
+        choices?: Array<{ delta?: { content?: string; reasoning_content?: string } }>;
+      };
+      const delta = json.choices?.[0]?.delta;
+      const thinking = delta?.reasoning_content;
+      const token = delta?.content;
+      if (thinking) yield { thinking };
+      if (token) yield { token };
     }
   }
 }

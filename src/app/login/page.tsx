@@ -20,7 +20,7 @@ export default async function LoginPage({
     <main className="flex min-h-dvh items-center justify-center px-5">
       <form action={login} className="w-full max-w-sm rounded-lg border border-border bg-white p-5 shadow-sm">
         <div className="mb-6">
-          <p className="text-sm font-medium text-primary">OpenChat Zen</p>
+          <p className="text-sm font-medium text-primary">OpenChat</p>
           <h1 className="mt-2 text-2xl font-semibold">Connexion</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             Recois un lien magique pour ouvrir ton espace de chat.

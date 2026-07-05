@@ -3,12 +3,12 @@ import { ServiceWorker } from "@/components/service-worker";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "OpenChat Zen",
-  description: "Mobile-first OpenCode chat client",
+  title: "OpenChat",
+  description: "Mobile-first chat client",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
-    title: "OpenChat Zen",
+    title: "OpenChat",
     statusBarStyle: "default"
   }
 };

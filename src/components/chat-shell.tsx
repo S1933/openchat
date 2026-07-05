@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, Menu, Plus, RefreshCw, Search, Send, Settings, Square, Trash2, X } from "lucide-react";
+import { Check, Copy, Menu, Pin, PinOff, Plus, RefreshCw, Search, Send, Settings, Sparkles, Square, Trash2, X } from "lucide-react";
 import { MarkdownMessage } from "@/components/markdown-message";
 import { cn } from "@/lib/utils";
 
@@ -10,12 +10,14 @@ type Conversation = {
   title: string;
   selectedModel: string | null;
   updatedAt: string;
+  pinned: boolean;
 };
 
 type Message = {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  thinking?: string;
   model?: string | null;
 };
 
@@ -42,8 +44,14 @@ export function ChatShell({ email }: { email: string }) {
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [modelHighlight, setModelHighlight] = useState(0);
+  const modelSheetRef = useRef<HTMLButtonElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const formRef = useRef<HTMLFormElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const activeConversation = conversations.find((conversation) => conversation.id === conversationId);
   const activeModel = models.find((model) => model.id === selectedModel);
@@ -87,19 +95,73 @@ export function ChatShell({ email }: { email: string }) {
     void bootstrap();
   }, [bootstrap]);
 
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef(true);
+
+  function handleMessagesScroll() {
+    const el = messagesScrollRef.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = distance < 48;
+  }
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    if (stickToBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
   }, [messages, streaming]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === "k") {
+        event.preventDefault();
+        setModelSheetOpen((open) => !open);
+      } else if ((event.metaKey || event.ctrlKey) && event.key === "n" && !event.shiftKey) {
+        event.preventDefault();
+        void createConversation();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  const modelHighlightRef = useRef(0);
+  useEffect(() => {
+    modelHighlightRef.current = modelHighlight;
+  }, [modelHighlight]);
+
+  useEffect(() => {
+    if (!modelSheetOpen) return;
+    setModelHighlight(0);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setModelHighlight((index) => Math.min(index + 1, models.length));
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setModelHighlight((index) => Math.max(index - 1, 0));
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        const current = modelHighlightRef.current;
+        const id = current === 0 ? (models[0]?.id ?? "") : models[current - 1]?.id;
+        if (id !== undefined) selectModel(id);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        setModelSheetOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [modelSheetOpen, models]);
+
+  useEffect(() => {
+    modelSheetRef.current?.scrollIntoView({ block: "nearest" });
+  }, [modelHighlight]);
 
   async function saveApiKey() {
     setError("");
-    const test = await fetch("/api/opencode/test-key", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ apiKey })
-    });
-    if (!test.ok) {
-      setError("Cle API invalide ou provider indisponible.");
+    if (!apiKey.trim()) {
+      setError("Cle API requise.");
       return;
     }
     await fetch("/api/settings", {
@@ -115,7 +177,11 @@ export function ChatShell({ email }: { email: string }) {
 
   async function syncModels() {
     setError("");
-    const res = await fetch("/api/models/sync", { method: "POST" });
+    const res = await fetch("/api/models/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "go" })
+    });
     if (!res.ok) {
       setError("Synchronisation impossible.");
       return;
@@ -162,6 +228,47 @@ export function ChatShell({ email }: { email: string }) {
       setConversationId(null);
       setMessages([]);
     }
+  }
+
+  function startRename(conversation: Conversation) {
+    setEditingId(conversation.id);
+    setEditTitle(conversation.title);
+  }
+
+  function cancelRename() {
+    setEditingId(null);
+    setEditTitle("");
+  }
+
+  function selectModel(id: string) {
+    setSelectedModel(id);
+    setModelSheetOpen(false);
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  }
+
+  async function commitRename(id: string) {
+    const title = editTitle.trim();
+    setEditingId(null);
+    setEditTitle("");
+    if (!title) return;
+    setConversations((prev) => prev.map((item) => (item.id === id ? { ...item, title } : item)));
+    await fetch(`/api/conversations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title })
+    });
+  }
+
+  async function togglePin(id: string) {
+    const target = conversations.find((item) => item.id === id);
+    if (!target) return;
+    const pinned = !target.pinned;
+    setConversations((prev) => prev.map((item) => (item.id === id ? { ...item, pinned } : item)));
+    await fetch(`/api/conversations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pinned })
+    });
   }
 
   async function sendMessage(event: FormEvent) {
@@ -216,12 +323,29 @@ export function ChatShell({ email }: { email: string }) {
       for (const chunk of chunks) {
         const line = chunk.trim();
         if (!line.startsWith("data:")) continue;
-        const payload = JSON.parse(line.slice(5)) as { token?: string; done?: boolean; error?: string };
-        if (payload.token) {
+        const payload = JSON.parse(line.slice(5)) as { token?: string; thinking?: string; done?: boolean; error?: string };
+        if (payload.thinking) {
           setMessages((prev) =>
             prev.map((message) =>
-              message.id === "streaming" ? { ...message, content: message.content + payload.token } : message
+              message.id === "streaming" ? { ...message, thinking: (message.thinking ?? "") + payload.thinking } : message
             )
+          );
+        }
+        if (payload.token) {
+          setMessages((prev) =>
+            prev.map((message) => {
+              if (message.id !== "streaming") return message;
+              const merged = message.content + payload.token;
+              const thinkMatch = merged.match(/<think>([\s\S]*?)(<\/think>|$)/);
+              if (!thinkMatch) return { ...message, content: merged };
+              const extracted = thinkMatch[1];
+              const rest = merged.slice(thinkMatch[0].length).replace(/^<\/think>\s*/, "");
+              return {
+                ...message,
+                thinking: (message.thinking ?? "") + extracted,
+                content: rest
+              };
+            })
           );
         }
         if (payload.error) setError(payload.error);
@@ -240,6 +364,68 @@ export function ChatShell({ email }: { email: string }) {
 
   const mainTitle = useMemo(() => activeConversation?.title ?? "New chat", [activeConversation]);
 
+  function renderConversation(conversation: Conversation) {
+    return (
+      <div
+        key={conversation.id}
+        className={cn(
+          "group mb-1 flex items-center gap-1 rounded-md px-2 py-2 text-sm",
+          conversation.id === conversationId ? "bg-muted" : "hover:bg-muted"
+        )}
+      >
+        <button
+          className="h-7 w-7 shrink-0 rounded-md opacity-60 hover:bg-white"
+          title={conversation.pinned ? "Desepingler" : "Epingler"}
+          onClick={() => togglePin(conversation.id)}
+        >
+          {conversation.pinned ? (
+            <Pin className="mx-auto" size={14} />
+          ) : (
+            <PinOff className="mx-auto" size={14} />
+          )}
+        </button>
+        {editingId === conversation.id ? (
+          <input
+            autoFocus
+            value={editTitle}
+            onChange={(event) => setEditTitle(event.target.value)}
+            onBlur={() => commitRename(conversation.id)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commitRename(conversation.id);
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                cancelRename();
+              }
+            }}
+            onClick={(event) => event.stopPropagation()}
+            className="min-w-0 flex-1 rounded-sm bg-white px-1 text-sm outline-none ring-1 ring-primary"
+            maxLength={80}
+          />
+        ) : (
+          <button
+            className="min-w-0 flex-1 truncate text-left"
+            onClick={() => openConversation(conversation.id)}
+            onDoubleClick={(event) => {
+              event.preventDefault();
+              startRename(conversation);
+            }}
+          >
+            {conversation.title}
+          </button>
+        )}
+        <button
+          className="h-7 w-7 shrink-0 rounded-md opacity-60 hover:bg-white"
+          title="Supprimer"
+          onClick={() => deleteConversation(conversation.id)}
+        >
+          <Trash2 className="mx-auto" size={14} />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <main className="flex h-dvh overflow-hidden bg-background">
       <aside
@@ -249,7 +435,7 @@ export function ChatShell({ email }: { email: string }) {
         )}
       >
         <div className="flex h-14 items-center justify-between border-b border-border px-3">
-          <span className="font-semibold">OpenChat Zen</span>
+          <span className="font-semibold">OpenChat</span>
           <button className="h-10 w-10 rounded-md lg:hidden" onClick={() => setDrawerOpen(false)} title="Fermer">
             <X className="mx-auto" size={20} />
           </button>
@@ -272,26 +458,28 @@ export function ChatShell({ email }: { email: string }) {
           </div>
         </div>
         <div className="h-[calc(100dvh-12rem)] overflow-y-auto px-2">
-          {filteredConversations.map((conversation) => (
-            <div
-              key={conversation.id}
-              className={cn(
-                "group mb-1 flex items-center gap-2 rounded-md px-2 py-2 text-sm",
-                conversation.id === conversationId ? "bg-muted" : "hover:bg-muted"
-              )}
-            >
-              <button className="min-w-0 flex-1 truncate text-left" onClick={() => openConversation(conversation.id)}>
-                {conversation.title}
-              </button>
-              <button
-                className="h-8 w-8 rounded-md opacity-70 hover:bg-white"
-                title="Supprimer"
-                onClick={() => deleteConversation(conversation.id)}
-              >
-                <Trash2 className="mx-auto" size={15} />
-              </button>
-            </div>
-          ))}
+          {(() => {
+            const sorted = [...filteredConversations].sort((a, b) => {
+              if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+              return a.updatedAt < b.updatedAt ? 1 : -1;
+            });
+            const pinned = sorted.filter((c) => c.pinned);
+            const others = sorted.filter((c) => !c.pinned);
+            return (
+              <>
+                {pinned.length > 0 ? (
+                  <>
+                    <p className="px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Epingles</p>
+                    {pinned.map((conversation) => renderConversation(conversation))}
+                  </>
+                ) : null}
+                {pinned.length > 0 && others.length > 0 ? (
+                  <p className="px-2 pb-1 pt-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Recents</p>
+                ) : null}
+                {others.map((conversation) => renderConversation(conversation))}
+              </>
+            );
+          })()}
         </div>
         <div className="border-t border-border p-3">
           <button className="flex h-11 w-full items-center gap-2 rounded-md px-2 text-sm" onClick={() => setSettingsOpen(true)}>
@@ -304,26 +492,11 @@ export function ChatShell({ email }: { email: string }) {
       {drawerOpen ? <div className="fixed inset-0 z-20 bg-black/25 lg:hidden" onClick={() => setDrawerOpen(false)} /> : null}
 
       <section className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border bg-white px-2">
-          <button className="h-10 w-10 rounded-md lg:hidden" onClick={() => setDrawerOpen(true)} title="Menu">
-            <Menu className="mx-auto" size={21} />
-          </button>
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate text-sm font-semibold">{mainTitle}</h1>
-            <button className="truncate text-xs text-muted-foreground" onClick={() => setModelSheetOpen(true)}>
-              {activeModel?.displayName ?? "Choisir un modele"}
-            </button>
-          </div>
-          <button className="h-10 w-10 rounded-md" onClick={() => setModelSheetOpen(true)} title="Modele">
-            <RefreshCw className="mx-auto" size={18} />
-          </button>
-        </header>
-
         {needsOnboarding ? (
           <Onboarding apiKey={apiKey} setApiKey={setApiKey} saveApiKey={saveApiKey} error={error} />
         ) : (
           <>
-            <div className="flex-1 overflow-y-auto px-3 py-4">
+            <div ref={messagesScrollRef} onScroll={handleMessagesScroll} className="flex-1 overflow-y-auto px-3 py-4">
               {messages.length === 0 ? (
                 <div className="mx-auto flex h-full max-w-md flex-col justify-center text-center">
                   <h2 className="text-2xl font-semibold">Comment puis-je aider ?</h2>
@@ -359,15 +532,30 @@ export function ChatShell({ email }: { email: string }) {
                 </div>
               )}
             </div>
-            <form className="border-t border-border bg-white p-2" onSubmit={sendMessage}>
+            <form ref={formRef} className="border-t border-border bg-white p-2" onSubmit={sendMessage}>
               {error ? <p className="mb-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
               <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-lg border border-border bg-white p-2">
+                <button
+                  type="button"
+                  onClick={() => setModelSheetOpen(true)}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-muted"
+                  title="Choisir un modele"
+                >
+                  <Sparkles size={14} className="shrink-0" />
+                </button>
                 <textarea
+                  ref={textareaRef}
                   value={input}
                   onChange={(event) => setInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      formRef.current?.requestSubmit();
+                    }
+                  }}
                   rows={1}
                   className="max-h-36 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 outline-none"
-                  placeholder="Message OpenChat Zen"
+                  placeholder="Message OpenChat (⏎ pour envoyer, ⇧⏎ saut de ligne)"
                 />
                 {streaming ? (
                   <button type="button" className="h-10 w-10 rounded-md bg-muted" onClick={stopStreaming} title="Stop">
@@ -387,37 +575,46 @@ export function ChatShell({ email }: { email: string }) {
       {modelSheetOpen ? (
         <Sheet title="Modeles" onClose={() => setModelSheetOpen(false)}>
           <button
-            className="mb-2 flex h-12 w-full items-center justify-between rounded-md border border-border px-3"
+            ref={modelHighlight === 0 ? modelSheetRef : null}
+            className={cn(
+              "mb-2 flex h-12 w-full items-center justify-between rounded-md border border-border px-3",
+              modelHighlight === 0 && "ring-2 ring-primary"
+            )}
             onClick={() => {
               const first = models[0]?.id ?? "";
-              setSelectedModel(first);
-              setModelSheetOpen(false);
+              if (first) selectModel(first);
+              else setModelSheetOpen(false);
             }}
+            onMouseEnter={() => setModelHighlight(0)}
           >
             Auto <Check size={17} className={selectedModel === models[0]?.id ? "opacity-100" : "opacity-0"} />
           </button>
-          {models.map((model) => (
-            <button
-              key={model.id}
-              className="mb-2 flex min-h-12 w-full items-center justify-between rounded-md border border-border px-3 text-left"
-              onClick={() => {
-                setSelectedModel(model.id);
-                setModelSheetOpen(false);
-              }}
-            >
-              <span>
-                <span className="block font-medium">{model.displayName}</span>
-                <span className="text-xs uppercase text-muted-foreground">{model.provider}</span>
-              </span>
-              <Check size={17} className={selectedModel === model.id ? "opacity-100" : "opacity-0"} />
-            </button>
-          ))}
+          {models.map((model, index) => {
+            const highlight = modelHighlight === index + 1;
+            return (
+              <button
+                key={model.id}
+                ref={highlight ? modelSheetRef : null}
+                className={cn(
+                  "mb-2 flex min-h-12 w-full items-center justify-between rounded-md border border-border px-3 text-left",
+                  highlight && "ring-2 ring-primary"
+                )}
+                onClick={() => selectModel(model.id)}
+                onMouseEnter={() => setModelHighlight(index + 1)}
+              >
+                <span>
+                  <span className="block font-medium">{model.displayName}</span>
+                </span>
+                <Check size={17} className={selectedModel === model.id ? "opacity-100" : "opacity-0"} />
+              </button>
+            );
+          })}
         </Sheet>
       ) : null}
 
       {settingsOpen ? (
         <Sheet title="Parametres" onClose={() => setSettingsOpen(false)}>
-          <label className="text-sm font-medium">Cle API OpenCode</label>
+          <label className="text-sm font-medium">Cle API</label>
           <input
             value={apiKey}
             onChange={(event) => setApiKey(event.target.value)}
@@ -455,14 +652,14 @@ function Onboarding({
         <p className="text-sm font-medium text-primary">Premier lancement</p>
         <h2 className="mt-2 text-2xl font-semibold">Ajoute ta cle API</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          Elle reste chiffree cote serveur et sert a decouvrir automatiquement tes modeles OpenCode.
+          Elle reste chiffree cote serveur et sert a utiliser tes modeles preferes.
         </p>
         <input
           value={apiKey}
           onChange={(event) => setApiKey(event.target.value)}
           type="password"
           className="mt-5 h-11 w-full rounded-md border border-border px-3 outline-none focus:ring-2 focus:ring-primary"
-          placeholder="Cle API OpenCode"
+          placeholder="Cle API"
         />
         {error ? <p className="mt-3 text-sm text-red-700">{error}</p> : null}
         <button className="mt-4 h-11 w-full rounded-md bg-primary font-medium text-primary-foreground" onClick={saveApiKey}>

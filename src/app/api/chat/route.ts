@@ -36,13 +36,19 @@ export async function POST(request: Request) {
     const apiKey = decryptSecret(settings.apiKeyEncrypted);
     const encoder = new TextEncoder();
     let assistantText = "";
+    let assistantThinking = "";
 
     const stream = new ReadableStream({
       async start(controller) {
         try {
-          for await (const token of streamChat({ apiKey, model: body.model, messages: context, signal: request.signal })) {
-            assistantText += token;
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`));
+          for await (const chunk of streamChat({ apiKey, model: body.model, messages: context, signal: request.signal })) {
+            if ("thinking" in chunk) {
+              assistantThinking += chunk.thinking;
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ thinking: chunk.thinking })}\n\n`));
+            } else if ("token" in chunk) {
+              assistantText += chunk.token;
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: chunk.token })}\n\n`));
+            }
           }
           const assistant = await prisma.message.create({
             data: {

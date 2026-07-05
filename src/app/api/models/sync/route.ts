@@ -3,15 +3,17 @@ import { decryptSecret } from "@/lib/crypto";
 import { json, errorResponse } from "@/lib/http";
 import { rateLimit } from "@/lib/rate-limit";
 import { requireUserId } from "@/lib/session";
-import { listAllModels } from "@/lib/providers";
+import { listProviderModels } from "@/lib/providers";
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
     await rateLimit("settings", userId);
     const settings = await prisma.userSettings.findUnique({ where: { userId } });
     if (!settings?.apiKeyEncrypted) throw new Error("missing_api_key");
-    const models = await listAllModels(decryptSecret(settings.apiKeyEncrypted));
+    const { provider } = (await request.json()) as { provider: string };
+    if (!provider) throw new Error("missing_provider");
+    const models = await listProviderModels(provider, decryptSecret(settings.apiKeyEncrypted));
     await prisma.$transaction(
       models.map((model) =>
         prisma.modelCache.upsert({

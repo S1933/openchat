@@ -1,7 +1,7 @@
 {
-  "name": "OpenChat Zen",
-  "short_name": "Zen",
-  "description": "OpenCode chat client",
+  "name": "OpenChat",
+  "short_name": "Chat",
+  "description": "Mobile-first chat client",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f6f8fa",

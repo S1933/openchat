@@ -13,7 +13,8 @@ export const conversationCreateSchema = z.object({
 export const conversationUpdateSchema = z.object({
   title: z.string().min(1).max(80).optional(),
   selectedModel: z.string().min(1).optional(),
-  archived: z.boolean().optional()
+  archived: z.boolean().optional(),
+  pinned: z.boolean().optional()
 });
 
 export const chatSchema = z.object({

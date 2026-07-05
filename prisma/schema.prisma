@@ -72,6 +72,7 @@ model Conversation {
   selectedModel String?
   summary       String?
   archived      Boolean   @default(false)
+  pinned        Boolean   @default(false)
   user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages      Message[]
   createdAt     DateTime  @default(now())
