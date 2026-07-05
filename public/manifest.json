@@ -1,0 +1,17 @@
+{
+  "name": "OpenChat Zen",
+  "short_name": "Zen",
+  "description": "OpenCode chat client",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f8fa",
+  "theme_color": "#148579",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

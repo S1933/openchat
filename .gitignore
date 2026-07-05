@@ -1,0 +1,9 @@
+.next
+.env
+.env.local
+.env.*.local
+node_modules
+coverage
+dist
+public/workbox-*.js
+*.tsbuildinfo

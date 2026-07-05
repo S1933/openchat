@@ -1,0 +1,123 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String          @id @default(cuid())
+  name          String?
+  email         String?         @unique
+  emailVerified DateTime?
+  image         String?
+  accounts      Account[]
+  sessions      Session[]
+  settings      UserSettings?
+  conversations Conversation[]
+  createdAt     DateTime        @default(now())
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model UserSettings {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  apiKeyEncrypted String?
+  defaultModel    String?
+  theme           String   @default("system")
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Conversation {
+  id            String    @id @default(cuid())
+  userId        String
+  title         String
+  selectedModel String?
+  summary       String?
+  archived      Boolean   @default(false)
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages      Message[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([userId, updatedAt])
+}
+
+model Message {
+  id               String       @id @default(cuid())
+  conversationId   String
+  role             MessageRole
+  content          String
+  model            String?
+  promptTokens     Int?
+  completionTokens Int?
+  status           MessageStatus @default(complete)
+  conversation     Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  createdAt        DateTime      @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+model ModelCache {
+  id          String   @id @default(cuid())
+  userId      String
+  provider    String
+  modelId     String
+  displayName String
+  free        Boolean  @default(false)
+  available   Boolean  @default(true)
+  lastSync    DateTime @default(now())
+
+  @@unique([userId, provider, modelId])
+  @@index([userId, provider])
+}
+
+enum MessageRole {
+  system
+  user
+  assistant
+}
+
+enum MessageStatus {
+  streaming
+  complete
+  cancelled
+  error
+}
