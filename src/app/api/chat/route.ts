@@ -55,7 +55,7 @@ export async function POST(request: Request) {
         const doc = await fetchUrlContent(firstUrl, request.signal);
         contextBlocks.push(formatUrlContext(firstUrl, doc));
       } catch (err) {
-        console.error("[chat] url fetch failed", err);
+        console.error("[chat] url fetch failed", { url: firstUrl, err });
       }
     }
     const extraContext = contextBlocks.length > 0 ? contextBlocks.join("\n\n") : undefined;
