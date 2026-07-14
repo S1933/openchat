@@ -7,6 +7,7 @@ import { streamChat } from "@/lib/providers";
 import { requireUserId } from "@/lib/session";
 import { chatSchema } from "@/lib/validation";
 import { formatSearchContext, searchWeb } from "@/lib/search";
+import { extractUrls, fetchUrlContent, formatUrlContext } from "@/lib/url";
 
 export async function POST(request: Request) {
   try {
@@ -39,15 +40,25 @@ export async function POST(request: Request) {
       select: { displayName: true }
     });
     const modelLabel = cached?.displayName ?? body.model;
-    let extraContext: string | undefined;
+    const contextBlocks: string[] = [];
     if (body.webSearch) {
       try {
         const result = await searchWeb(body.message, request.signal);
-        extraContext = formatSearchContext(result);
+        contextBlocks.push(formatSearchContext(result));
       } catch (err) {
         console.error("[chat] web search failed", err);
       }
     }
+    const firstUrl = extractUrls(body.message)[0];
+    if (firstUrl) {
+      try {
+        const doc = await fetchUrlContent(firstUrl, request.signal);
+        contextBlocks.push(formatUrlContext(firstUrl, doc));
+      } catch (err) {
+        console.error("[chat] url fetch failed", err);
+      }
+    }
+    const extraContext = contextBlocks.length > 0 ? contextBlocks.join("\n\n") : undefined;
     const context = buildConversationContext(conversation.summary, [...conversation.messages, userMessage], modelLabel, extraContext);
     const apiKey = decryptSecret(settings.apiKeyEncrypted);
     const encoder = new TextEncoder();
