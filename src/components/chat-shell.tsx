@@ -55,6 +55,19 @@ export function ChatShell({ email }: { email: string }) {
   const [modelHighlight, setModelHighlight] = useState(0);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const filteredConversations = useMemo(
+    () => conversations.filter((conversation) => conversation.title.toLowerCase().includes(query.toLowerCase())),
+    [conversations, query]
+  );
+  const sortedSidebar = useMemo(
+    () => [...filteredConversations].sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      return a.updatedAt < b.updatedAt ? 1 : -1;
+    }),
+    [filteredConversations]
+  );
+  const pinnedConversations = useMemo(() => sortedSidebar.filter((c) => c.pinned), [sortedSidebar]);
+  const otherConversations = useMemo(() => sortedSidebar.filter((c) => !c.pinned), [sortedSidebar]);
   const modelSheetRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -63,9 +76,6 @@ export function ChatShell({ email }: { email: string }) {
 
   const activeConversation = conversations.find((conversation) => conversation.id === conversationId);
   const activeModel = models.find((model) => model.id === selectedModel);
-  const filteredConversations = conversations.filter((conversation) =>
-    conversation.title.toLowerCase().includes(query.toLowerCase())
-  );
   const needsOnboarding = !hasApiKey || models.length === 0;
 
   const bootstrap = useCallback(async () => {
@@ -135,7 +145,9 @@ export function ChatShell({ email }: { email: string }) {
 
   useEffect(() => {
     if (stickToBottomRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      // "auto" instead of "smooth" — smooth-scroll animations are 200-400ms each
+      // and never finish during streaming because the next token triggers a new one.
+      bottomRef.current?.scrollIntoView({ block: "end" });
     }
   }, [messages, streaming]);
 
@@ -391,7 +403,7 @@ export function ChatShell({ email }: { email: string }) {
     // next frame to win against the keyboard pop on mobile.
     stickToBottomRef.current = true;
     requestAnimationFrame(() => {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      bottomRef.current?.scrollIntoView({ block: "end" });
     });
     abortRef.current = new AbortController();
 
@@ -450,8 +462,10 @@ export function ChatShell({ email }: { email: string }) {
     }
     setStreaming(false);
     abortRef.current = null;
-    await refreshMessages(id);
-    await bootstrap();
+    // Fire-and-forget: server already persisted the assistant message in its
+    // post-stream background task. We hold the full text locally, so the
+    // refetch is unnecessary latency before the user can send the next message.
+    void refreshMessages(id);
   }
 
   function stopStreaming() {
@@ -555,28 +569,18 @@ export function ChatShell({ email }: { email: string }) {
           </div>
         </div>
         <div className="h-[calc(100dvh-12rem)] overflow-y-auto px-2">
-          {(() => {
-            const sorted = [...filteredConversations].sort((a, b) => {
-              if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-              return a.updatedAt < b.updatedAt ? 1 : -1;
-            });
-            const pinned = sorted.filter((c) => c.pinned);
-            const others = sorted.filter((c) => !c.pinned);
-            return (
+          <>
+            {pinnedConversations.length > 0 ? (
               <>
-                {pinned.length > 0 ? (
-                  <>
-                    <p className="px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Epingles</p>
-                    {pinned.map((conversation) => renderConversation(conversation))}
-                  </>
-                ) : null}
-                {pinned.length > 0 && others.length > 0 ? (
-                  <p className="px-2 pb-1 pt-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Recents</p>
-                ) : null}
-                {others.map((conversation) => renderConversation(conversation))}
+                <p className="px-2 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Epingles</p>
+                {pinnedConversations.map((conversation) => renderConversation(conversation))}
               </>
-            );
-          })()}
+            ) : null}
+            {pinnedConversations.length > 0 && otherConversations.length > 0 ? (
+              <p className="px-2 pb-1 pt-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Recents</p>
+            ) : null}
+            {otherConversations.map((conversation) => renderConversation(conversation))}
+          </>
         </div>
         <div className="border-t border-border p-3">
           <button className="flex h-11 w-full items-center gap-2 rounded-md px-2 text-sm" onClick={() => setSettingsOpen(true)}>
@@ -626,7 +630,9 @@ export function ChatShell({ email }: { email: string }) {
                 </div>
               ) : (
                 <div className="mx-auto max-w-3xl space-y-4">
-                  {messages.map((message) => (
+                  {messages.map((message) => {
+                    const isStreaming = message.id === "streaming";
+                    return (
                     <article
                       key={message.id}
                       className={cn(
@@ -642,9 +648,17 @@ export function ChatShell({ email }: { email: string }) {
                               Web search
                             </div>
                           ) : null}
-                          <MarkdownMessage content={message.content || (message.id === "streaming" ? "..." : "")} />
+                          {isStreaming ? (
+                            // Plain text during streaming: avoids re-parsing the
+                            // entire growing markdown string on every token.
+                            <pre className="m-0 whitespace-pre-wrap font-sans">
+                              {message.content || "\u00a0"}
+                            </pre>
+                          ) : (
+                            <MarkdownMessage content={message.content} />
+                          )}
                         </div>
-                        {message.content ? (
+                        {message.content && !isStreaming ? (
                           <button
                             title="Copier"
                             className="h-8 w-8 shrink-0 rounded-md opacity-70 hover:bg-muted"
@@ -655,7 +669,8 @@ export function ChatShell({ email }: { email: string }) {
                         ) : null}
                       </div>
                     </article>
-                  ))}
+                    );
+                  })}
                   <div ref={bottomRef} />
                 </div>
               )}

@@ -5,7 +5,9 @@ import { prisma } from "@/lib/prisma";
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: PrismaAdapter(prisma),
-  session: { strategy: "database" },
+  // JWT sessions cut 2 DB round-trips (Session + User lookup) per /api/chat call.
+  // Single-user app → no rotation concerns. Adapter is still here for Account/VerificationToken.
+  session: { strategy: "jwt" },
   pages: { signIn: "/login" },
   providers: [
     Resend({
@@ -14,8 +16,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     })
   ],
   callbacks: {
-    session({ session, user }) {
-      if (session.user) session.user.id = user.id;
+    session({ session, token }) {
+      if (session.user && token.sub) session.user.id = token.sub;
       return session;
     }
   }

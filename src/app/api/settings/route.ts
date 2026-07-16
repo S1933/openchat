@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { json, errorResponse } from "@/lib/http";
 import { requireUserId } from "@/lib/session";
+import { invalidateSettings } from "@/lib/settings-cache";
 import { apiKeySchema } from "@/lib/validation";
 
 export async function GET() {
@@ -34,6 +35,7 @@ export async function POST(request: Request) {
         defaultModel: body.defaultModel
       }
     });
+    invalidateSettings(userId);
     return json({
       hasApiKey: Boolean(decryptSecret(settings.apiKeyEncrypted ?? "")),
       defaultModel: settings.defaultModel

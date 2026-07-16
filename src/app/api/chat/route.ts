@@ -5,62 +5,77 @@ import { json, errorResponse } from "@/lib/http";
 import { buildConversationContext, compactSummary, shouldRefreshSummary } from "@/lib/memory";
 import { streamChat } from "@/lib/providers";
 import { requireUserId } from "@/lib/session";
+import { getSettings } from "@/lib/settings-cache";
 import { chatSchema } from "@/lib/validation";
 import { formatSearchContext, searchWeb } from "@/lib/search";
 import { extractUrls, fetchUrlContent, formatUrlContext } from "@/lib/url";
+
+// Module-level cache: decrypting the API key is a sync crypto op. The encrypted
+// blob is the cache key; if it changes (settings POST), the cache miss naturally.
+const apiKeyCache = new Map<string, string>();
 
 export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
     const body = chatSchema.parse(await request.json());
-    const [settings, conversation] = await Promise.all([
-      prisma.userSettings.findUnique({ where: { userId } }),
+
+    // Kick off EVERYTHING in parallel: DB reads, userMessage insert, web search,
+    // URL fetch — all gated on `body.message` and `body.conversationId` which we
+    // already have from the parsed body. The only thing that has to wait is the
+    // actual LLM stream, which needs the decrypted API key + the persisted user
+    // message id (which we don't actually need — only its content/role).
+    const firstUrl = extractUrls(body.message)[0];
+    const [settings, conversation, userMessage, searchResult, urlDoc] = await Promise.all([
+      getSettings(userId),
       prisma.conversation.findFirst({
         where: { id: body.conversationId, userId },
-        include: { messages: { orderBy: { createdAt: "asc" }, take: 40 } }
-      })
+        select: {
+          id: true,
+          title: true,
+          summary: true,
+          messages: {
+            orderBy: { createdAt: "asc" },
+            take: 30
+          }
+        }
+      }),
+      prisma.message.create({
+        data: {
+          conversationId: body.conversationId,
+          role: MessageRole.user,
+          content: body.message,
+          model: body.model,
+          webSearch: body.webSearch ?? false
+        }
+      }),
+      body.webSearch
+        ? searchWeb(body.message, request.signal).catch((err) => {
+            console.error("[chat] web search failed", err);
+            return null;
+          })
+        : Promise.resolve(null),
+      firstUrl
+        ? fetchUrlContent(firstUrl, request.signal).catch((err) => {
+            console.error("[chat] url fetch failed", { url: firstUrl, err });
+            return null;
+          })
+        : Promise.resolve(null)
     ]);
     if (!settings?.apiKeyEncrypted) throw new Error("missing_api_key");
     if (!conversation) throw new Error("not_found");
 
-    const userMessage = await prisma.message.create({
-      data: {
-        conversationId: conversation.id,
-        role: MessageRole.user,
-        content: body.message,
-        model: body.model,
-        webSearch: body.webSearch ?? false
-      }
-    });
-
-    const [provider, ...rest] = body.model.split(":");
-    const modelId = rest.join(":");
-    const cached = await prisma.modelCache.findUnique({
-      where: { userId_provider_modelId: { userId, provider, modelId } },
-      select: { displayName: true }
-    });
-    const modelLabel = cached?.displayName ?? body.model;
+    const cachedKey = apiKeyCache.get(settings.apiKeyEncrypted);
+    const apiKey = cachedKey ?? (() => {
+      const decrypted = decryptSecret(settings.apiKeyEncrypted!);
+      apiKeyCache.set(settings!.apiKeyEncrypted!, decrypted);
+      return decrypted;
+    })();
     const contextBlocks: string[] = [];
-    if (body.webSearch) {
-      try {
-        const result = await searchWeb(body.message, request.signal);
-        contextBlocks.push(formatSearchContext(result));
-      } catch (err) {
-        console.error("[chat] web search failed", err);
-      }
-    }
-    const firstUrl = extractUrls(body.message)[0];
-    if (firstUrl) {
-      try {
-        const doc = await fetchUrlContent(firstUrl, request.signal);
-        contextBlocks.push(formatUrlContext(firstUrl, doc));
-      } catch (err) {
-        console.error("[chat] url fetch failed", { url: firstUrl, err });
-      }
-    }
+    if (searchResult) contextBlocks.push(formatSearchContext(searchResult));
+    if (urlDoc && firstUrl) contextBlocks.push(formatUrlContext(firstUrl, urlDoc));
     const extraContext = contextBlocks.length > 0 ? contextBlocks.join("\n\n") : undefined;
+    const modelLabel = body.model;
     const context = buildConversationContext(conversation.summary, [...conversation.messages, userMessage], modelLabel, extraContext);
-    const apiKey = decryptSecret(settings.apiKeyEncrypted);
     const encoder = new TextEncoder();
     let assistantText = "";
     let assistantThinking = "";
