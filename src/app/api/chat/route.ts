@@ -9,6 +9,7 @@ import { getSettings } from "@/lib/settings-cache";
 import { chatSchema } from "@/lib/validation";
 import { formatSearchContext, searchWeb } from "@/lib/search";
 import { extractUrls, fetchUrlContent, formatUrlContext } from "@/lib/url";
+import { extractRepoRef, buildRepoContext, formatRepoContext } from "@/lib/github";
 
 // Module-level cache: decrypting the API key is a sync crypto op. The encrypted
 // blob is the cache key; if it changes (settings POST), the cache miss naturally.
@@ -25,7 +26,8 @@ export async function POST(request: Request) {
     // actual LLM stream, which needs the decrypted API key + the persisted user
     // message id (which we don't actually need — only its content/role).
     const firstUrl = extractUrls(body.message)[0];
-    const [settings, conversation, userMessage, searchResult, urlDoc] = await Promise.all([
+    const repoRef = extractRepoRef(body.message);
+    const [settings, conversation, userMessage, searchResult, urlDoc, repoCtx] = await Promise.all([
       getSettings(userId),
       prisma.conversation.findFirst({
         where: { id: body.conversationId, userId },
@@ -59,6 +61,12 @@ export async function POST(request: Request) {
             console.error("[chat] url fetch failed", { url: firstUrl, err });
             return null;
           })
+        : Promise.resolve(null),
+      repoRef
+        ? buildRepoContext(repoRef, request.signal).catch((err) => {
+            console.error("[chat] repo fetch failed", { repo: repoRef, err });
+            return null;
+          })
         : Promise.resolve(null)
     ]);
     if (!settings?.apiKeyEncrypted) throw new Error("missing_api_key");
@@ -73,6 +81,7 @@ export async function POST(request: Request) {
     const contextBlocks: string[] = [];
     if (searchResult) contextBlocks.push(formatSearchContext(searchResult));
     if (urlDoc && firstUrl) contextBlocks.push(formatUrlContext(firstUrl, urlDoc));
+    if (repoCtx) contextBlocks.push(formatRepoContext(repoCtx));
     const extraContext = contextBlocks.length > 0 ? contextBlocks.join("\n\n") : undefined;
     const modelLabel = body.model;
     const context = buildConversationContext(conversation.summary, [...conversation.messages, userMessage], modelLabel, extraContext);
