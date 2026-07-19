@@ -4,6 +4,7 @@ import { decryptSecret } from "@/lib/crypto";
 import { json, errorResponse } from "@/lib/http";
 import { buildConversationContext, compactSummary, shouldRefreshSummary } from "@/lib/memory";
 import { streamChat } from "@/lib/providers";
+import { extractMemory, getMemoryContext } from "@/lib/memories";
 import { requireUserId } from "@/lib/session";
 import { getSettings } from "@/lib/settings-cache";
 import { chatSchema } from "@/lib/validation";
@@ -27,7 +28,7 @@ export async function POST(request: Request) {
     // message id (which we don't actually need — only its content/role).
     const firstUrl = extractUrls(body.message)[0];
     const repoRef = extractRepoRef(body.message);
-    const [settings, conversation, userMessage, searchResult, urlDoc, repoCtx] = await Promise.all([
+    const [settings, conversation, userMessage, searchResult, urlDoc, repoCtx, memoryBlock] = await Promise.all([
       getSettings(userId),
       prisma.conversation.findFirst({
         where: { id: body.conversationId, userId },
@@ -67,7 +68,11 @@ export async function POST(request: Request) {
             console.error("[chat] repo fetch failed", { repo: repoRef, err });
             return null;
           })
-        : Promise.resolve(null)
+        : Promise.resolve(null),
+      getMemoryContext(userId).catch((err) => {
+        console.error("[chat] memory fetch failed", err);
+        return null;
+      })
     ]);
     if (!settings?.apiKeyEncrypted) throw new Error("missing_api_key");
     if (!conversation) throw new Error("not_found");
@@ -82,6 +87,7 @@ export async function POST(request: Request) {
     if (searchResult) contextBlocks.push(formatSearchContext(searchResult));
     if (urlDoc && firstUrl) contextBlocks.push(formatUrlContext(firstUrl, urlDoc));
     if (repoCtx) contextBlocks.push(formatRepoContext(repoCtx));
+    if (memoryBlock) contextBlocks.push(memoryBlock);
     const extraContext = contextBlocks.length > 0 ? contextBlocks.join("\n\n") : undefined;
     const modelLabel = body.model;
     const context = buildConversationContext(conversation.summary, [...conversation.messages, userMessage], modelLabel, extraContext);
@@ -135,6 +141,25 @@ export async function POST(request: Request) {
               console.error("[chat] post-stream persist failed", err);
             }
           })();
+
+          // Fire-and-forget user-memory extraction. Never blocks the response
+          // and never surfaces errors to the user. Pulls a cheap model
+          // (deepseek-v4-flash) so the cost is negligible vs. the main call.
+          console.error("[chat] triggering extraction", {
+            userId,
+            conversationId: conversation.id,
+            userMsgLen: body.message.length,
+            assistantLen: assistantText.length
+          });
+          void extractMemory({
+            userId,
+            conversationId: conversation.id,
+            apiKey,
+            transcript: [
+              { role: "user", content: body.message },
+              { role: "assistant", content: assistantText }
+            ]
+          });
         } catch (error) {
           if (assistantText) {
             // Fire-and-forget so the error event isn't blocked by a DB write
