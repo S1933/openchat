@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, Globe, Menu, Pin, PinOff, Plus, RefreshCw, Search, Send, Settings, Sparkles, Square, Star, Trash2, X } from "lucide-react";
+import { Brain, Copy, Globe, Menu, PenLine, Pin, PinOff, Plus, RefreshCw, Search, Send, Settings, Square, Trash2, X } from "lucide-react";
 import { MarkdownMessage } from "@/components/markdown-message";
 import { cn } from "@/lib/utils";
 
@@ -33,15 +33,13 @@ type Model = {
 
 export function ChatShell({ email }: { email: string }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [modelSheetOpen, setModelSheetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [memoriesOpen, setMemoriesOpen] = useState(false);
+  const [memories, setMemories] = useState<{id: string; category: string; label: string; value: string}[]>([]);
   const [hasApiKey, setHasApiKey] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [models, setModels] = useState<Model[]>([]);
-  const sortedModels = useMemo(
-    () => [...models].sort((a, b) => Number(b.favorite) - Number(a.favorite)),
-    [models]
-  );
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -52,7 +50,6 @@ export function ChatShell({ email }: { email: string }) {
   const [query, setQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
-  const [modelHighlight, setModelHighlight] = useState(0);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const filteredConversations = useMemo(
@@ -68,15 +65,20 @@ export function ChatShell({ email }: { email: string }) {
   );
   const pinnedConversations = useMemo(() => sortedSidebar.filter((c) => c.pinned), [sortedSidebar]);
   const otherConversations = useMemo(() => sortedSidebar.filter((c) => !c.pinned), [sortedSidebar]);
-  const modelSheetRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const activeConversation = conversations.find((conversation) => conversation.id === conversationId);
-  const activeModel = models.find((model) => model.id === selectedModel);
-  const needsOnboarding = !hasApiKey || models.length === 0;
+  // Only show the onboarding dialog AFTER bootstrap has actually confirmed
+  // the user has no API key. Otherwise the default `hasApiKey=false` causes
+  // a one-frame flash of the API-key screen on every page load.
+  const needsOnboarding = loaded && (!hasApiKey || models.length === 0);
+
+  // The model is hard-coded to minimax-m3 everywhere. The list is still
+  // fetched (for onboarding + cache warming) but we never expose a switch.
+  const DEFAULT_MODEL_ID = "minimax-m3";
 
   const bootstrap = useCallback(async () => {
     const [settingsRes, modelsRes, conversationsRes] = await Promise.all([
@@ -87,26 +89,26 @@ export function ChatShell({ email }: { email: string }) {
     if (settingsRes.ok) {
       const settings = (await settingsRes.json()) as { hasApiKey: boolean; defaultModel: string | null };
       setHasApiKey(settings.hasApiKey);
-      if (settings.defaultModel) setSelectedModel(settings.defaultModel);
     }
     if (modelsRes.ok) {
       const data = (await modelsRes.json()) as { models: Model[] };
       setModels(data.models);
-      setSelectedModel((prev) => prev || data.models[0]?.id || "");
+      // Force minimax-m3 if present, fall back to the first model in the
+      // list (never to settings.defaultModel — we want one consistent default).
+      const minimax = data.models.find((m) => m.modelId === DEFAULT_MODEL_ID);
+      setSelectedModel(minimax?.id ?? data.models[0]?.id ?? "");
     }
     if (conversationsRes.ok) {
       const data = (await conversationsRes.json()) as { conversations: Conversation[] };
       setConversations(data.conversations);
-      const first = data.conversations[0];
-      if (first) {
-        setConversationId((prev) => prev ?? first.id);
-        const messagesRes = await fetch(`/api/conversations/${first.id}/messages`);
-        if (messagesRes.ok) {
-          const messagesData = (await messagesRes.json()) as { messages: Message[] };
-          setMessages((prev) => (prev.length ? prev : messagesData.messages));
-        }
-      }
+      // Don't auto-open the most recent conversation: the user wants a fresh
+      // chat each time they load the app. The sidebar still shows the history;
+      // clicking one opens it. Typing while no conversation is selected will
+      // auto-create one (see sendMessage).
     }
+    // Signal that bootstrap completed so needsOnboarding can finally be evaluated
+    // against real data, not the default `hasApiKey=false` / `models=[]`.
+    setLoaded(true);
   }, []);
 
   useEffect(() => {
@@ -164,10 +166,9 @@ export function ChatShell({ email }: { email: string }) {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key === "k") {
-        event.preventDefault();
-        setModelSheetOpen((open) => !open);
-      } else if ((event.metaKey || event.ctrlKey) && event.key === "n" && !event.shiftKey) {
+      // Cmd/Ctrl+N → new conversation. (Cmd/Ctrl+K used to open the model picker
+      // — removed along with the model switcher.)
+      if ((event.metaKey || event.ctrlKey) && event.key === "n" && !event.shiftKey) {
         event.preventDefault();
         void createConversation();
       }
@@ -175,11 +176,6 @@ export function ChatShell({ email }: { email: string }) {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, []);
-
-  const modelHighlightRef = useRef(0);
-  useEffect(() => {
-    modelHighlightRef.current = modelHighlight;
-  }, [modelHighlight]);
 
   // Edge-swipe gesture: from the left edge of the screen, swipe right to open the sidebar.
   // Mirrors the iOS native "back swipe" affordance on mobile.
@@ -208,33 +204,48 @@ export function ChatShell({ email }: { email: string }) {
     swipeStartRef.current = null;
   }
 
-  useEffect(() => {
-    if (!modelSheetOpen) return;
-    setModelHighlight(0);
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        setModelHighlight((index) => Math.min(index + 1, sortedModels.length - 1));
-      } else if (event.key === "ArrowUp") {
-        event.preventDefault();
-        setModelHighlight((index) => Math.max(index - 1, 0));
-      } else if (event.key === "Enter") {
-        event.preventDefault();
-        const current = modelHighlightRef.current;
-        const id = sortedModels[current]?.id;
-        if (id !== undefined) selectModel(id);
-      } else if (event.key === "Escape") {
-        event.preventDefault();
-        setModelSheetOpen(false);
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [modelSheetOpen, sortedModels]);
+  // Long-press on a sidebar conversation to rename it (mobile only — desktop
+  // already has double-click). Mirrors the long-press pattern used by ThinkBlock.
+  const renameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const renameStartRef = useRef<{ x: number; y: number } | null>(null);
+  const justRenamedRef = useRef(false);
 
-  useEffect(() => {
-    modelSheetRef.current?.scrollIntoView({ block: "nearest" });
-  }, [modelHighlight]);
+  function beginRenameHold(event: React.TouchEvent, conversation: Conversation) {
+    const touch = event.touches[0];
+    if (!touch) return;
+    // Clear any leftover timer from a previous conversation in the same gesture.
+    if (renameTimerRef.current) clearTimeout(renameTimerRef.current);
+    renameStartRef.current = { x: touch.clientX, y: touch.clientY };
+    renameTimerRef.current = setTimeout(() => {
+      renameTimerRef.current = null;
+      // Suppress the synthetic click that fires ~1 frame after touchend.
+      justRenamedRef.current = true;
+      setTimeout(() => {
+        justRenamedRef.current = false;
+      }, 400);
+      startRename(conversation);
+    }, 500);
+  }
+
+  function trackRenameHold(event: React.TouchEvent) {
+    const start = renameStartRef.current;
+    const touch = event.touches[0];
+    if (!start || !touch || renameTimerRef.current === null) return;
+    // Cancel if the finger drifts more than ~10 px in any direction.
+    const dx = Math.abs(touch.clientX - start.x);
+    const dy = Math.abs(touch.clientY - start.y);
+    if (dx > 10 || dy > 10) {
+      clearTimeout(renameTimerRef.current);
+      renameTimerRef.current = null;
+    }
+  }
+
+  function endRenameHold() {
+    if (renameTimerRef.current) {
+      clearTimeout(renameTimerRef.current);
+      renameTimerRef.current = null;
+    }
+  }
 
   async function saveApiKey() {
     setError("");
@@ -242,10 +253,11 @@ export function ChatShell({ email }: { email: string }) {
       setError("Cle API requise.");
       return;
     }
+    // No `defaultModel` in the body — the chat app is single-model now.
     await fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ apiKey, defaultModel: selectedModel || undefined })
+      body: JSON.stringify({ apiKey })
     });
     await syncModels();
     setHasApiKey(true);
@@ -267,7 +279,7 @@ export function ChatShell({ email }: { email: string }) {
     const modelsRes = await fetch("/api/models");
     const data = (await modelsRes.json()) as { models: Model[] };
     setModels(data.models);
-    if (!selectedModel && data.models[0]) setSelectedModel(data.models[0].id);
+    // selectedModel stays untouched — model switcher is gone.
   }
 
   async function createConversation() {
@@ -287,8 +299,40 @@ export function ChatShell({ email }: { email: string }) {
     setConversationId(id);
     setDrawerOpen(false);
     await refreshMessages(id);
-    const conversation = conversations.find((item) => item.id === id);
-    if (conversation?.selectedModel) setSelectedModel(conversation.selectedModel);
+    // NOTE: previously we restored the conversation's `selectedModel` here.
+    // Removed: the app is single-model now (minimax-m3), so opening an old
+    // conversation cannot switch models on the fly.
+  }
+
+  async function fetchMemories() {
+    try {
+      const res = await fetch("/api/memories");
+      if (!res.ok) return;
+      const data = (await res.json()) as { entries: typeof memories };
+      setMemories(data.entries);
+    } catch (err) {
+      console.error("fetchMemories failed", err);
+    }
+  }
+
+  // Refresh memories whenever the user opens the sheet — the extraction runs
+  // off the critical chat path (fire-and-forget after each assistant reply),
+  // so the only way the UI sees new entries without a full reload is to re-fetch
+  // when the sheet is opened.
+  const openMemoriesSheet = useCallback(() => {
+    setMemoriesOpen(true);
+    void fetchMemories();
+  }, []);
+
+  async function deleteMemory(id: string) {
+    setMemories((prev) => prev.filter((entry) => entry.id !== id));
+    try {
+      await fetch(`/api/memories/${id}`, { method: "DELETE" });
+    } catch (err) {
+      console.error("deleteMemory failed", err);
+      // Re-fetch on failure so the UI returns to authoritative state.
+      void fetchMemories();
+    }
   }
 
   async function refreshMessages(id: string) {
@@ -316,33 +360,6 @@ export function ChatShell({ email }: { email: string }) {
   function cancelRename() {
     setEditingId(null);
     setEditTitle("");
-  }
-
-  function selectModel(id: string) {
-    setSelectedModel(id);
-    setModelSheetOpen(false);
-    setTimeout(() => textareaRef.current?.focus(), 0);
-  }
-
-  async function toggleFavorite(modelId: string) {
-    // Optimistic update: flip locally first, then sync to server
-    let nextValue = false;
-    setModels((prev) =>
-      prev.map((model) => {
-        if (model.id !== modelId) return model;
-        nextValue = !model.favorite;
-        return { ...model, favorite: nextValue };
-      })
-    );
-    try {
-      await fetch("/api/models/favorite", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ modelId })
-      });
-    } catch (err) {
-      console.error("toggleFavorite failed", err);
-    }
   }
 
   async function commitRename(id: string) {
@@ -517,15 +534,34 @@ export function ChatShell({ email }: { email: string }) {
         ) : (
           <button
             className="min-w-0 flex-1 truncate text-left"
-            onClick={() => openConversation(conversation.id)}
+            onClick={(event) => {
+              if (justRenamedRef.current) return;
+              openConversation(conversation.id);
+            }}
             onDoubleClick={(event) => {
               event.preventDefault();
               startRename(conversation);
             }}
+            onTouchStart={(event) => beginRenameHold(event, conversation)}
+            onTouchMove={trackRenameHold}
+            onTouchEnd={endRenameHold}
+            onTouchCancel={endRenameHold}
+            title="Maintenir pour renommer"
           >
             {conversation.title}
           </button>
         )}
+        <button
+          className="h-7 w-7 shrink-0 rounded-md opacity-60 hover:bg-white"
+          title="Renommer"
+          aria-label="Renommer la discussion"
+          onClick={(event) => {
+            event.stopPropagation();
+            startRename(conversation);
+          }}
+        >
+          <PenLine className="mx-auto" size={14} />
+        </button>
         <button
           className="h-7 w-7 shrink-0 rounded-md opacity-60 hover:bg-white"
           title="Supprimer"
@@ -547,9 +583,24 @@ export function ChatShell({ email }: { email: string }) {
       >
         <div className="flex h-14 items-center justify-between border-b border-border px-3">
           <span className="font-semibold">OpenChat</span>
-          <button className="h-10 w-10 rounded-md lg:hidden" onClick={() => setDrawerOpen(false)} title="Fermer">
-            <X className="mx-auto" size={20} />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              className="relative h-10 w-10 rounded-md hover:bg-muted"
+              onClick={openMemoriesSheet}
+              title="Mémoire utilisateur"
+              aria-label="Mémoire utilisateur"
+            >
+              <Brain className="mx-auto" size={18} />
+              {memories.length > 0 ? (
+                <span className="absolute right-1 top-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium leading-none text-primary-foreground">
+                  {memories.length}
+                </span>
+              ) : null}
+            </button>
+            <button className="h-10 w-10 rounded-md lg:hidden" onClick={() => setDrawerOpen(false)} title="Fermer">
+              <X className="mx-auto" size={20} />
+            </button>
+          </div>
         </div>
         <div className="p-3">
           <button
@@ -626,7 +677,21 @@ export function ChatShell({ email }: { email: string }) {
               {messages.length === 0 ? (
                 <div className="mx-auto flex h-full max-w-md flex-col justify-center text-center">
                   <h2 className="text-2xl font-semibold">Comment puis-je aider ?</h2>
-                  <p className="mt-2 text-sm text-muted-foreground">Choisis un modele, envoie un message, puis reprends le chat ici.</p>
+                  <p className="mt-2 text-sm text-muted-foreground">Envoie un message pour commencer la conversation.</p>
+                  {/* Mobile tap-to-start: required on iOS Safari where programmatic
+                      `.focus()` is suppressed by Apple (no user gesture ⇒ no keyboard).
+                      On Android the textarea's autoFocus already opens the keyboard,
+                      but the same tap target gives consistent UX across mobile OSes.
+                      Hidden after the user types anything or once conversationId is set. */}
+                  {isMobile && !conversationId ? (
+                    <button
+                      type="button"
+                      onClick={() => textareaRef.current?.focus()}
+                      className="mx-auto mt-6 inline-flex h-12 items-center rounded-full bg-primary px-6 text-base font-medium text-primary-foreground shadow-sm active:scale-95"
+                    >
+                      Tape ici pour commencer
+                    </button>
+                  ) : null}
                 </div>
               ) : (
                 <div className="mx-auto max-w-3xl space-y-4">
@@ -680,14 +745,6 @@ export function ChatShell({ email }: { email: string }) {
               <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-lg border-0 bg-white p-2 lg:border lg:border-border">
                 <button
                   type="button"
-                  onClick={() => setModelSheetOpen(true)}
-                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-muted"
-                  title="Choisir un modele"
-                >
-                  <Sparkles size={14} className="shrink-0" />
-                </button>
-                <button
-                  type="button"
                   onClick={() => setWebSearchEnabled((value) => !value)}
                   className={cn(
                     "flex h-10 w-10 shrink-0 items-center justify-center rounded-md",
@@ -739,49 +796,6 @@ export function ChatShell({ email }: { email: string }) {
         )}
       </section>
 
-      {modelSheetOpen ? (
-        <Sheet title="Modeles" onClose={() => setModelSheetOpen(false)}>
-          {sortedModels.map((model, index) => {
-            const highlight = modelHighlight === index;
-            return (
-              <div
-                key={model.id}
-                ref={highlight ? modelSheetRef : null}
-                className={cn(
-                  "mb-2 flex min-h-12 w-full items-center justify-between rounded-md border border-border px-3 text-left",
-                  highlight && "ring-2 ring-primary"
-                )}
-                onMouseEnter={() => setModelHighlight(index)}
-              >
-                <button
-                  className="min-w-0 flex-1 py-3 text-left"
-                  onClick={() => selectModel(model.id)}
-                >
-                  <span className="block font-medium">{model.displayName}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void toggleFavorite(model.id);
-                  }}
-                  className="ml-2 h-9 w-9 shrink-0 rounded-md hover:bg-muted"
-                  title={model.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}
-                  aria-label={model.favorite ? "Retirer des favoris" : "Ajouter aux favoris"}
-                  aria-pressed={model.favorite}
-                >
-                  <Star
-                    size={17}
-                    className={cn("mx-auto", model.favorite ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground")}
-                  />
-                </button>
-                <Check size={17} className={cn("ml-1 shrink-0", selectedModel === model.id ? "opacity-100" : "opacity-0")} />
-              </div>
-            );
-          })}
-        </Sheet>
-      ) : null}
-
       {settingsOpen ? (
         <Sheet title="Parametres" onClose={() => setSettingsOpen(false)}>
           <label className="text-sm font-medium">Cle API</label>
@@ -799,6 +813,56 @@ export function ChatShell({ email }: { email: string }) {
             Synchroniser les modeles
           </button>
           {error ? <p className="mt-3 text-sm text-red-700">{error}</p> : null}
+        </Sheet>
+      ) : null}
+
+      {memoriesOpen ? (
+        <Sheet
+          title="Memoire utilisateur"
+          onClose={() => setMemoriesOpen(false)}
+        >
+          <p className="mb-3 text-xs text-muted-foreground">
+            Faits persistants que l'IA a retenus de tes conversations et qui sont injectes dans chaque chat. Supprime ce qui ne te convient pas.
+          </p>
+          {memories.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border bg-muted/40 p-4 text-center text-sm text-muted-foreground">
+              Pas encore de memoire.
+              <br />
+              Partage des infos sur toi dans tes chats (metier, gouts, contexte de vie...), l'IA les extraira automatiquement.
+            </div>
+          ) : (
+            (() => {
+              const grouped = new Map<string, typeof memories>();
+              for (const entry of memories) {
+                if (!grouped.has(entry.category)) grouped.set(entry.category, []);
+                grouped.get(entry.category)!.push(entry);
+              }
+              return Array.from(grouped.entries()).map(([category, items]) => (
+                <section key={category} className="mb-4">
+                  <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{category}</p>
+                  {items.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="group mb-1 flex items-start gap-2 rounded-md border border-border bg-white px-3 py-2"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <span className="text-sm font-medium">{entry.label}: </span>
+                        <span className="text-sm">{entry.value}</span>
+                      </div>
+                      <button
+                        className="h-7 w-7 shrink-0 rounded-md opacity-50 hover:bg-muted hover:opacity-100"
+                        title="Supprimer ce fait"
+                        aria-label={`Supprimer ${entry.label}`}
+                        onClick={() => void deleteMemory(entry.id)}
+                      >
+                        <Trash2 className="mx-auto" size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </section>
+              ));
+            })()
+          )}
         </Sheet>
       ) : null}
     </main>
