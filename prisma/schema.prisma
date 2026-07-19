@@ -17,6 +17,7 @@ model User {
   sessions      Session[]
   settings      UserSettings?
   conversations Conversation[]
+  memoryEntries  MemoryEntry[]
   createdAt     DateTime        @default(now())
 }
 
@@ -110,6 +111,21 @@ model ModelCache {
 
   @@unique([userId, provider, modelId])
   @@index([userId, provider])
+}
+
+model MemoryEntry {
+  id        String   @id @default(cuid())
+  userId    String
+  category  String
+  label     String
+  value     String
+  source    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, label])
+  @@index([userId, updatedAt])
 }
 
 enum MessageRole {

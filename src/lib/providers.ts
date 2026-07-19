@@ -114,3 +114,34 @@ export async function* streamChat({
     }
   }
 }
+
+export async function chatOnce({
+  apiKey,
+  model,
+  messages,
+  signal
+}: {
+  apiKey: string;
+  model: string;
+  messages: ChatMessage[];
+  signal?: AbortSignal;
+}): Promise<string> {
+  const { provider, modelId } = providerFromModel(model);
+  const url = `${baseUrl(provider)}/v1/chat/completions`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ model: modelId, messages, stream: false }),
+    signal
+  });
+  if (res.status === 401 || res.status === 403) throw new Error("invalid_key");
+  if (res.status === 429) throw new Error("rate_limit");
+  if (!res.ok) throw new Error("provider_unavailable");
+  const data = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  return data.choices?.[0]?.message?.content ?? "";
+}
